@@ -17,8 +17,8 @@
 # Exec example:
 # ./upload-rest.sh -f Sandbox/001 -i foobar-3.zip
 #                  -n fossy -p fossy
-#                  -h "https://dt-fossology-dev.dt.620nm.net/api/v1"
-#                  -s "https://dt-fossology-dev.dt.620nm.net/repo"
+#                  -h "https://<fqdn>/repo/api/v1"
+#                  -s "https://<fqdn>/repo"
 #
 # For HTTPS GIT clones, the script will use the following
 # environment variable, if they exist
