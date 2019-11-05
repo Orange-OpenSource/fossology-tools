@@ -17,7 +17,6 @@
 # Exec example:
 # ./upload-rest.sh -f Sandbox/001 -i foobar-3.zip
 #                  -n fossy -p fossy
-#                  -h "https://<fqdn>/repo/api/v1"
 #                  -s "https://<fqdn>/repo"
 #
 # For HTTPS GIT clones, the script will use the following
@@ -55,25 +54,25 @@ _usage() {
 cat <<-EOS
 
 Usage: $(basename $0)
-  Upload a file     : $(basename $0) [options...] -i <upload-file>
-  Upload a GIT repo : $(basename $0) [options...] -u <git-url>
+  $(basename $0) <authentication> <urls options> <upload options> [other options...]
 
-Authentication:
-  Either a token or a user+password options should be provided (a token will be created).
-  Token authentication: $(basename $0) -i <...> ...
-  User+Password authentication: $(basename $0) -n <...> -p <...>
+Authentication: Either a token or a user+password options should be provided (a token will be created).
+  - Token authentication: $(basename $0) -t <...> ...
+  - User+Password authentication: $(basename $0) -n <...> -p <...>
 
-Where the options are:
+URLs options: Specify the Service URL, optionnally the Rest API URL
+  - $(basename $0) -s <service_fqdn> [ -h <rest_api_url> ]
+
+Upload Options: Upload either a binary file, or a GIT repository
+  - $(basename $0) -i <upload-file>
+  - $(basename $0) -u <git-url>
+
+Other options:
  -f <folder> : Folder in which the upload will be added
  -d : Debug mode
  -e : Extra Debug mode
  -g : Group under which the upload will be created
  -r : Enable reuse (not finalized)
- -t : token
- -u : username
- -p : password
- -h : Rest API url
- -s : Portal Site Url
 EOS
         exit $1
 }
@@ -170,8 +169,8 @@ f_get_folder_id() {
 }
 
 [ -n "$input_file_full$input_git_url" ] || _usage 1
-[ -n "$rest_url" ] || _usage 1
 [ -n "$site_url" ] || _usage 1
+[ -n "$rest_url" ] || rest_url="$site_url/api/v1"
 
 [ -n "$input_file_full" ] && upload_name="$(basename $input_file_full)"
 [ -n "$input_git_url" ] && upload_name="$(echo $input_git_url | sed 's_.*/__')"
