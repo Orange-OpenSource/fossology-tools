@@ -6,7 +6,6 @@ COPY json-templates $_WKDIR/json-templates
 COPY upload-rest.sh $_WKDIR/
 # Enable to copy your CA Certificate
 #COPY ca-certificates.crt $_WKDIR/
-ENTRYPOINT ["./upload-rest.sh"]
 RUN export PATH=$PATH:$_WKDIR
 RUN apk add jq
 RUN apk add curl
