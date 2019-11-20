@@ -33,8 +33,6 @@ debug="false"
 folder="Software Repository"
 cacert_file="$(dirname $0)/ca-certificates.crt"
 curl_insecure="false"
-# Stores the reply data from the latest Rest call.
-JSON_REPLY_FILE=$(mktemp) || f_fatal "Cannot create temp file"
 
 _usage() {
 cat <<-EOS
@@ -45,16 +43,15 @@ and automatically trigger scans.
 It may be used to easily automate scans in a CI/CD environment.
 
 Usage:
-  <program> <authentication> <service urls> <upload options> [other options...]
+  <program> <authentication> <rest api url> <upload options> [other options...]
   <program> -v
 
 Authentication methods:
   - Token           : -t <...>
   - User + Password : -n <...> -p <...>
 
-Service URLs:
-  - Service web url (mandatory): -s <service_fqdn>
-  - Service api url (optional) : -r <rest_api_url>
+Rest API URL: -r <rest_api_utl>
+              Ex. https://service-fqdn/repo/api/v1
 
 Upload options:
   - Binary file  : -i <upload-file>
@@ -71,8 +68,9 @@ All options:
   -n , --username    ) Fossology username
   -p , --password    ) Fossology password
   -r , --rest-url    ) Full address to Rest API service
-  -R , --reuse       ) Enable reuse (/!\\ not finalized)
+  -R , --reuse       ) Enable reuse
   -s , --site-url    ) Fossology portal address
+                       Enables printing the resulting Fossology URL
   -t , --api-token   ) API Access Token
   -u , --git-url     ) Url GIT repoisitory address
   -v , --version     ) Print current version
@@ -87,11 +85,15 @@ _version() {
     exit 0
 }
 f_extra_debug() {
-    echo "$extra_debug" | grep -q "^true$"
+    echo "$extra_debug" | grep -q "^true$" || return 1
+    [ $# -gt 0 ] && echo "$@" >&2
+    return 0
 }
 
 f_debug() {
-    echo "$debug" | grep -q "^true$"
+    echo "$debug" | grep -q "^true$" || return 1
+    [ $# -gt 0 ] && echo "$@" >&2
+    return 0
 }
 
 f_log_part() {
@@ -105,9 +107,19 @@ EOS
 }
 
 f_fatal() {
-    echo
-    echo "Fatal: $@"
+    echo >&2
+    echo "Fatal: $@" >&2
     exit 1
+}
+
+f_output_json() {
+    echo >&2
+    echo "<<< JSON OUTPUT <<<" >&2
+    if [ -n "$1" ]
+    then head -n $1 $JSON_REPLY_FILE >&2
+    else cat $JSON_REPLY_FILE | jq . >&2
+    fi
+    echo '>>> >>> >>> >>> >>>' >&2
 }
 
 # Execute REST Query
@@ -126,15 +138,14 @@ f_do_curl() {
     local curl_cert_opt=
     if $curl_insecure
     then
-        f_debug && echo "CURL: do not check remote certificate" >&2
+        f_debug "CURL: do not check remote certificate"
         curl_cert_opt="-k"
     else
         if [ -r "$cacert_file" ]
         then
             curl_cert_opt="--cacert $cacert_file"
         else
-            f_debug && \
-                echo "CURL: Cannot find ca-cert file '$cacert_file', ignoring." >&2
+            f_debug "CURL: Cannot find ca-cert file '$cacert_file', ignoring."
         fi
     fi
     http_verb=$1
@@ -146,40 +157,37 @@ f_do_curl() {
     curl $curl_cert_opt -s -S -X $http_verb $rest_url/$rest_action "$@" > $JSON_REPLY_FILE
     rc=$?
     f_extra_debug && set +x
-    if f_debug
+    if [ $rc -ne 0 ]
     then
-        if [ $rc -ne 0 ]
-        then
-            echo "CURL exit code  : $rc" >&2
-            echo "CURL output file: $JSON_REPLY_FILE" >&2
-        fi
+        f_debug "CURL exit code  : $rc"
+        f_debug "CURL output file: $JSON_REPLY_FILE"
     fi
     [ $rc -ne 0 ] && return 999
+
     if ! head -n 1 $JSON_REPLY_FILE | jq . >/dev/null 2>&1
     then
-        echo
-        echo '<<< <<< <<<' >&2
-        head -n 5 $JSON_REPLY_FILE >&2
-        echo '>>> >>> >>>' >&2
+        f_output_json 5
         f_fatal "Reply is not JSON"
-    fi
-    if f_extra_debug
-    then
-        echo "=== JSON OUTPUT ===" >&2
-        cat $JSON_REPLY_FILE | jq . >&2
-    fi
-    local code=$(cat $JSON_REPLY_FILE | jq 'try .code  catch 0 |  if . == null then 0 else . end')
-    if echo "$code" | grep -q '^[02]'
-    then
-        return 0
     else
+        if ! code=$(cat $JSON_REPLY_FILE | jq 'try .code  catch 0 |  if . == null then 0 else . end')
+        then
+            f_output_json 5
+            f_fatal "Error reading error code."
+        else
+            f_extra_debug && f_output_json
+            if echo "$code" | grep -q '^[02]'
+            then
+                return 0
+            else
 cat >&2 <<-EOS
 ERROR:
   Code: $(cat $JSON_REPLY_FILE | jq '.code')
   Message: $(cat $JSON_REPLY_FILE | jq '.message')
 EOS
-        return $code
-   fi
+                return 1
+            fi
+        fi
+    fi
 
 }
 
@@ -195,11 +203,8 @@ f_get_token_expire_date() {
 # Arg 2: Parent folder ID
 
 f_get_folder_id() {
-    f_do_curl GET folders -H "$t_auth" || f_fatal "Failed to list folders" >/dev/null
-    _folder_id=$(jq ".[] | select(.\"name\" == \"$1\" and .\"parent\" == $2) | .\"id\"" $JSON_REPLY_FILE)
-    [ -n "$_folder_id" ] || return 1
-    echo $_folder_id
-    return 0
+    f_do_curl GET folders -H "$t_auth" || return 1
+    jq ".[] | select(.\"name\" == \"$1\" and .\"parent\" == $2) | .\"id\"" $JSON_REPLY_FILE
 }
 
 # #############################################################################
@@ -232,14 +237,15 @@ while true; do
 done
 
 [ -n "$input_file$input_git_url" ] || _usage 1
-[ -n "$site_url" ] || _usage 1
+[ -n "$rest_url" ] || _usage 1
 # Remove trailing '/' from URL
 site_url=$(echo "$site_url" | sed 's!/*$!!')
-[ -n "$rest_url" ] || rest_url="$site_url/api/v1"
 
 [ -n "$input_file" ] && upload_name="$(basename $input_file)"
 [ -n "$input_git_url" ] && upload_name="$(echo $input_git_url | sed 's_.*/__')"
 
+# Stores the reply data from the latest Rest call.
+JSON_REPLY_FILE=$(mktemp) || f_fatal "Cannot create temp file"
 
 cat <<EOS
 
@@ -318,10 +324,12 @@ f_handle_folders() {
     local level_id=
     while read level_name
     do
-        f_debug && echo "= Folder : $level_name - parent_id:$parent_id"  >&2
-        if level_id=$(f_get_folder_id "$level_name" $parent_id)
+        f_debug "= Folder : $level_name - parent_id:$parent_id"
+        level_id=$(f_get_folder_id "$level_name" $parent_id) || \
+            f_fatal "Failed to list folders" >/dev/null
+        if [ -n "$level_id" ]
         then
-            f_debug && echo "=        : Found   - id:$level_id" >&2
+            f_debug "=        : Found   - id:$level_id"
         else
             # Create a new folder
             f_do_curl POST folders -H "$t_auth" \
@@ -329,8 +337,9 @@ f_handle_folders() {
                 -H "folderName:$level_name" \
                 || f_fatal "Failed to create folder '$level_name'"
             level_id=$(f_get_folder_id "$level_name" $parent_id) || \
-                f_fatal "Failed to find created folder"
-            f_debug && echo "=        : Created - id:$level_id" >&2
+                f_fatal "Failed to list folders" >/dev/null
+            [ -n "$level_id" ] || f_fatal "Failed to find created folder"
+            f_debug "=        : Created - id:$level_id"
         fi
         parent_id=$level_id
     done
@@ -339,7 +348,7 @@ f_handle_folders() {
 
 echo "Folder path: '$folder'"
 
-folder_id=$(echo "$folder" | tr '/' '\n' | f_handle_folders)
+folder_id=$(echo "$folder" | tr '/' '\n' | f_handle_folders) || f_fatal "Error handling folders"
 echo "Folder ID  : $folder_id"
 [ -n "$folder_id" ] || f_fatal "Bug."
 
@@ -353,6 +362,7 @@ f_log_part "Upload"
 if [ -n "$input_file" ]
 then
     echo "Upload file: $input_file"
+    f_debug && ls -l $input_file
     f_do_curl POST  uploads -H "$t_auth" $option_groupid \
         -H "folderId:$folder_id" \
         -H "uploadDescription:REST Upload - from File" \
@@ -384,11 +394,22 @@ fi
 
 upload_id=$(cat $JSON_REPLY_FILE | jq .message)
 
-# that's a pretty clunky way to find the item ID to build the URL, but works for now
-f_do_curl GET search -H "$t_auth" -H "filename:$upload_name" || f_fatal "Failed to search folder"
+# Search the ITEM ID, only ti build the resulting Fossology browsable URL
+# Do not do it if <site_url> was not provided
+if [ -n "$site_url" ]
+then
+    # that's a pretty clunky way to find the item ID to build the URL, but works for now
+    f_do_curl GET search -H "$t_auth" -H "filename:$upload_name" || f_fatal "Failed to search folder"
 
-item_id=$(cat $JSON_REPLY_FILE | jq ".[-1] | select(.\"upload\".\"folderid\" == $folder_id) | .uploadTreeId")
-f_debug && echo "Item ID: $item_id" >&2
+    item_id=$(cat $JSON_REPLY_FILE | jq ".[-1] | select(.\"upload\".\"folderid\" == $folder_id) | .uploadTreeId")
+    fossology_url="$site_url/?mod=license&upload=$upload_id&folder=$folder_id&item=$item_id"
+    f_debug "Item ID: $item_id"
+    f_debug "Fossology URL: $fossology_url"
+else
+    f_debug "Not Site URL provided"
+    fossology_url="n/a"
+fi
+
 # TODO: filter with 'upload:#' option, when it works
 f_do_curl GET "jobs?upload=$upload_id" -H "$t_auth" || f_fatal "Failed to find upload job"
 job_status=$(jq '.[].status' $JSON_REPLY_FILE)
@@ -445,19 +466,14 @@ then
         echo "No Previous upload found, skipping Reuse option"
     fi
 else
-    f_debug && echo "REUSE: Disabled" >&2
+    f_debug "REUSE: Disabled"
 fi
 
 f_log_part "Trigger Scan Jobs"
 
-cat <<EOS
-Input file: $input_file
-Input Git URL: $input_git_url
-item_id: $item_id
-
-Fossology Link: $site_url/?mod=license&upload=$upload_id&folder=$folder_id&item=$item_id
-
-EOS
+echo "Fossology URL: $fossology_url"
+echo
+echo "Scan jobs: starting"
 
 options_json=$(jq -n $jq_reuse_args -f $scan_options_file) || f_fatal "JQ operation failed"
 f_do_curl POST  jobs -H "$t_auth" \
@@ -465,6 +481,8 @@ f_do_curl POST  jobs -H "$t_auth" \
     -H "folderId:$folder_id" \
     -H "uploadId:$upload_id" \
     -d "$options_json" || f_fatal "Failed to start scan"
+
+echo "Scan jobs: started"
 
 f_log_part "End"
 
