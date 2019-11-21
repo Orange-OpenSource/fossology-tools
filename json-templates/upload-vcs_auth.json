@@ -1,6 +1,0 @@
-{
-	"vcsType": "git",
-	"vcsUrl": $vcs_url,
-	"vcsUsername": $vcs_username,
-	"vcsPassword": $vcs_password
-}
